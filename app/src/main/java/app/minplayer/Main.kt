@@ -13,6 +13,14 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import android.graphics.Bitmap
+import android.util.LruCache
+import android.util.Size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -70,7 +78,7 @@ class PlaybackService : MediaSessionService() {
     }
 }
 
-fun fmt(ms: Long): String { val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60) }
+fun fmt(ms: Long): String { val s = ms / 1000; return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s % 3600 / 60, s % 60) else "%d:%02d".format(s / 60, s % 60) }
 
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
@@ -144,11 +152,32 @@ fun Library(open: (List<Media>, Int) -> Unit, pick: () -> Unit) {
             if (!granted) Text("মিডিয়ার অনুমতি দিন অথবা ‘ফাইল খুলুন’ চাপুন", Modifier.padding(16.dp))
             LazyColumn {
                 itemsIndexed(list) { i, m ->
-                    ListItem(headlineContent = { Text(m.title, maxLines = 1) },
+                    ListItem(headlineContent = { Text(m.title.substringBeforeLast('.'), maxLines = 2) },
                         supportingContent = { Text(fmt(m.dur)) },
+                        leadingContent = { Thumb(m, if (m.video) Modifier.size(120.dp, 68.dp) else Modifier.size(56.dp)) },
                         modifier = Modifier.clickable { open(list, i) })
                 }
             }
         }
+    }
+}
+
+object ThumbCache : LruCache<String, Bitmap>(80)
+
+@Composable
+fun Thumb(m: Media, modifier: Modifier) {
+    val ctx = LocalContext.current
+    val bmp by produceState<Bitmap?>(ThumbCache.get(m.uri.toString()), m.uri) {
+        if (value == null && Build.VERSION.SDK_INT >= 29) {
+            value = withContext(Dispatchers.IO) {
+                runCatching { ctx.contentResolver.loadThumbnail(m.uri, Size(320, 320), null) }.getOrNull()
+            }?.also { ThumbCache.put(m.uri.toString(), it) }
+        }
+    }
+    Box(modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center) {
+        val b = bmp
+        if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Text(if (m.video) "▶" else "♪", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

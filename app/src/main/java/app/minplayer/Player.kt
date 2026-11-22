@@ -2,6 +2,14 @@ package app.minplayer
 
 import android.content.ComponentName
 import android.os.Bundle
+import android.app.Activity
+import android.content.Context
+import android.media.AudioManager
+import android.view.GestureDetector
+import android.view.MotionEvent
+import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import android.os.SystemClock
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -62,6 +70,8 @@ class PlayerActivity : ComponentActivity() {
 @Composable
 fun PlayerScreen(p: Player) {
     var showTimer by remember { mutableStateOf(false) }
+    var hud by remember { mutableStateOf("") }
+    LaunchedEffect(hud) { if (hud.isNotEmpty()) { delay(800); hud = "" } }
     val end by SleepTimer.endAt.collectAsState()
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(end) { while (end > 0) { now = SystemClock.elapsedRealtime(); delay(1000) } }
@@ -75,7 +85,7 @@ fun PlayerScreen(p: Player) {
         p.addListener(l); onDispose { p.removeListener(l) }
     }
     Box(Modifier.fillMaxSize()) {
-        AndroidView(factory = { PlayerView(it).apply { player = p; setShowNextButton(true); setShowPreviousButton(true) } },
+        AndroidView(factory = { c -> makePlayerView(c, p) { hud = it } },
             update = {
                 it.controllerShowTimeoutMs = if (isVideo) 3000 else 0
                 it.controllerHideOnTouch = isVideo
@@ -83,6 +93,11 @@ fun PlayerScreen(p: Player) {
             }, modifier = Modifier.fillMaxSize())
         if (!isVideo) Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.align(Alignment.Center).padding(32.dp))
+        if (hud.isNotEmpty()) Surface(shape = RoundedCornerShape(16.dp), color = Color(0x99000000),
+            modifier = Modifier.align(Alignment.Center)) {
+            Text(hud, color = Color.White, style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
+        }
         FilledTonalButton(onClick = { showTimer = true },
             modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)) {
             Text(if (end > 0) "⏲ " + fmt(maxOf(0L, end - now)) else "⏲ টাইমার")
@@ -109,4 +124,41 @@ fun TimerDialog(active: Boolean, onDismiss: () -> Unit) {
         confirmButton = { TextButton(onClick = {
             custom.toIntOrNull()?.takeIf { it > 0 }?.let { SleepTimer.start(it) }; onDismiss() }) { Text("সেট") } },
         dismissButton = { if (active) TextButton(onClick = { SleepTimer.cancel(); onDismiss() }) { Text("বন্ধ করুন") } })
+}
+
+fun makePlayerView(c: Context, p: Player, onHud: (String) -> Unit): PlayerView {
+    val act = c as? Activity
+    val am = c.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    var vol = 0f
+    var br = -1f
+    val v = PlayerView(c)
+    v.player = p; v.setShowNextButton(true); v.setShowPreviousButton(true)
+    val gd = GestureDetector(c, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean {
+            vol = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat(); return true
+        }
+        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            if (v.isControllerFullyVisible) { if (v.controllerHideOnTouch) v.hideController() } else v.showController()
+            return true
+        }
+        override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+            if (e1 == null || abs(dy) < abs(dx)) return true
+            val f = dy / v.height * 1.5f
+            if (e1.x < v.width / 2) {
+                val w = act?.window ?: return true
+                if (br < 0) br = w.attributes.screenBrightness.takeIf { it >= 0 } ?: 0.5f
+                br = (br + f).coerceIn(0.02f, 1f)
+                w.attributes = w.attributes.apply { screenBrightness = br }
+                onHud("☀ " + (br * 100).toInt() + "%")
+            } else {
+                vol = (vol + f * max).coerceIn(0f, max.toFloat())
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, vol.roundToInt(), 0)
+                onHud("🔊 " + (vol / max * 100).toInt() + "%")
+            }
+            return true
+        }
+    })
+    v.setOnTouchListener { _, ev -> gd.onTouchEvent(ev) }
+    return v
 }
